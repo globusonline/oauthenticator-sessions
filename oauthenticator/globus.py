@@ -29,7 +29,28 @@ class GlobusMixin(OAuth2Mixin):
 
 
 class GlobusLoginHandler(OAuthLoginHandler, GlobusMixin):
-    pass
+    @gen.coroutine
+    def get(self):
+        redirect_uri = self.authenticator.get_callback_url(self)
+        self.log.info('OAuth redirect: %r', redirect_uri)
+        state = self.get_state()
+        session_required_identities = self.authenticator.session_required_identities
+        #session_required_identities = 'b58b196e-c9fe-11e5-a528-8c705ad34f60'
+        #session_required_identities = '879b9144-4cca-4e88-bd44-9da7aadb449c'
+        if bool(session_required_identities):
+            self.log.info('There are required identities: %r', session_required_identities)
+            #extra_params={'state': state,
+            extra_params={'session_required_identities': session_required_identities}
+        else:
+            extra_params={'state': state}
+
+        self.set_state_cookie(state)
+        self.authorize_redirect(
+            redirect_uri=redirect_uri,
+            client_id=self.authenticator.client_id,
+            scope=self.authenticator.scope,
+            extra_params=extra_params,
+            response_type='code')
 
 
 class GlobusLogoutHandler(LogoutHandler):
@@ -81,6 +102,13 @@ class GlobusOAuthenticator(OAuthenticator):
     def _identity_provider_default(self):
         return os.getenv('IDENTITY_PROVIDER', 'globusid.org')
 
+    session_required_identities = List(help="""Require that session be
+    authenticated with all of the listed identities.""").tag(config=True)
+
+    def _session_required_identities_default(self):
+        return []
+        #return ["b58b196e-c9fe-11e5-a528-8c705ad34f60"]
+
     exclude_tokens = List(
         help="""Exclude tokens from being passed into user environments
         when they start notebooks, Terminals, etc."""
@@ -93,7 +121,9 @@ class GlobusOAuthenticator(OAuthenticator):
         return [
             'openid',
             'profile',
-            'urn:globus:auth:scope:transfer.api.globus.org:all'
+            #'urn:globus:auth:scope:transfer.api.globus.org:all'
+            'urn:globus:auth:scope:transfer.api.globus.org:all',
+            'urn:globus:auth:scope:auth.globus.org:view_identity_set'
         ]
 
     allow_refresh_tokens = Bool(
@@ -140,7 +170,7 @@ class GlobusOAuthenticator(OAuthenticator):
             globus_data = base64.b64encode(
                 pickle.dumps(state)
             )
-            spawner.environment['GLOBUS_DATA'] = globus_data.decode('utf-8')
+            spawner.environment['GLOBUS_DATA'] = globus_data
 
     def globus_portal_client(self):
         return globus_sdk.ConfidentialAppAuthClient(
@@ -166,9 +196,52 @@ class GlobusOAuthenticator(OAuthenticator):
         # Doing the code for token for id_token exchange
         tokens = client.oauth2_exchange_code_for_tokens(code)
         id_token = tokens.decode_id_token(client)
-        # It's possible for identity provider domains to be namespaced
-        # https://docs.globus.org/api/auth/specification/#identity_provider_namespaces # noqa
-        username, domain = id_token.get('preferred_username').split('@', 1)
+        id_set = client.oauth2_token_introspect(tokens.data['access_token'],include='identities_set').data
+        identities = client.get_identities(ids=id_set['identities_set'])
+        required_id = ''
+        iddata = identities.data['identities']
+        self.log.info('iddata is %r', iddata)
+        for ids in iddata:
+            if ids['identity_provider']=='b58b196e-c9fe-11e5-a528-8c705ad34f60':
+               required_id = ids['id']
+        if required_id == '':
+            self.log.info('User doesn\'t have required ALCF identity linked in this account')
+        else:
+            self.log.info('required ALCF identity is: %r', required_id)
+        session_token = client.oauth2_token_introspect(tokens.data['access_token'],include='session_info').data
+        self.log.info('session_token: %r', session_token)
+        session_token_info = session_token['session_info']
+        self.log.info('session_token_info: %r', session_token_info)
+        self.log.info('AUTHENTICATIONS %r', session_token_info['authentications'])
+        if required_id in session_token_info['authentications'].keys():
+            self.log.info('WE HAVE THE RIGHT AUTH KEY WOOT')
+        else:
+            session_required_identities = required_id
+            self.log.info('required_id is %r', required_id)
+            #cbu = self.get_callback_url()
+            #attempt at restarting flow by instantiating a new GlobusOAuthenticator.  It is not working.
+            new_auth = GlobusOAuthenticator
+            new_auth.session_required_identities = required_id
+            new_auth.login_handler.authenticator=new_auth
+            new_auth.login_handler.get(new_auth.login_handler)
+
+            # raising an error doesn't seem to help us get back to the login
+            raise HTTPError(
+                303,
+                'This site requires authentication using {} accounts. Please reauthenticate using {}'
+                ' account at {}.'.format(
+                    self.identity_provider,
+                    self.identity_provider,
+                    cbu
+                    )
+            )
+
+        username, domain = id_token.get('preferred_username').split('@')
+        self.log.info('Username/domain: %r %r', username, domain)
+        self.log.info('Token: %r', id_token)
+        self.log.info('Tokens: %r', tokens.data)
+        self.log.info('Identity Set: %r', id_set)
+        self.log.info('Identity data: %r', identities.data)
 
         if self.identity_provider and domain != self.identity_provider:
             raise HTTPError(

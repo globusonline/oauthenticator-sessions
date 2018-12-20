@@ -34,13 +34,12 @@ class GlobusLoginHandler(OAuthLoginHandler, GlobusMixin):
         redirect_uri = self.authenticator.get_callback_url(self)
         self.log.info('OAuth redirect: %r', redirect_uri)
         state = self.get_state()
-        session_required_identities = self.authenticator.session_required_identities
-        #session_required_identities = 'b58b196e-c9fe-11e5-a528-8c705ad34f60'
-        #session_required_identities = '879b9144-4cca-4e88-bd44-9da7aadb449c'
+        session_required_identities = self.get_argument("session_required_identities", None, True)
+
         if bool(session_required_identities):
             self.log.info('There are required identities: %r', session_required_identities)
-            #extra_params={'state': state,
-            extra_params={'session_required_identities': session_required_identities}
+            extra_params={'state': state,
+                          'session_required_identities': session_required_identities}
         else:
             extra_params={'state': state}
 
@@ -102,12 +101,12 @@ class GlobusOAuthenticator(OAuthenticator):
     def _identity_provider_default(self):
         return os.getenv('IDENTITY_PROVIDER', 'globusid.org')
 
-    session_required_identities = List(help="""Require that session be
-    authenticated with all of the listed identities.""").tag(config=True)
+    session_required_idp = Unicode(help="""Require that session be
+    authenticated with at least one identity from IDP""").tag(config=True)
 
-    def _session_required_identities_default(self):
-        return []
-        #return ["b58b196e-c9fe-11e5-a528-8c705ad34f60"]
+    def _session_required_idp_default(self):
+        #This is the ALCF IDP uuid
+        return 'b58b196e-c9fe-11e5-a528-8c705ad34f60'
 
     exclude_tokens = List(
         help="""Exclude tokens from being passed into user environments
@@ -121,7 +120,6 @@ class GlobusOAuthenticator(OAuthenticator):
         return [
             'openid',
             'profile',
-            #'urn:globus:auth:scope:transfer.api.globus.org:all'
             'urn:globus:auth:scope:transfer.api.globus.org:all',
             'urn:globus:auth:scope:auth.globus.org:view_identity_set'
         ]
@@ -202,7 +200,7 @@ class GlobusOAuthenticator(OAuthenticator):
         iddata = identities.data['identities']
         self.log.info('iddata is %r', iddata)
         for ids in iddata:
-            if ids['identity_provider']=='b58b196e-c9fe-11e5-a528-8c705ad34f60':
+            if ids['identity_provider']==self.session_required_idp:
                required_id = ids['id']
         if required_id == '':
             self.log.info('User doesn\'t have required ALCF identity linked in this account')
@@ -214,34 +212,26 @@ class GlobusOAuthenticator(OAuthenticator):
         self.log.info('session_token_info: %r', session_token_info)
         self.log.info('AUTHENTICATIONS %r', session_token_info['authentications'])
         if required_id in session_token_info['authentications'].keys():
-            self.log.info('WE HAVE THE RIGHT AUTH KEY WOOT')
+            self.log.info('Correct ID is in authentications set')
         else:
             session_required_identities = required_id
             self.log.info('required_id is %r', required_id)
-            #cbu = self.get_callback_url()
-            #attempt at restarting flow by instantiating a new GlobusOAuthenticator.  It is not working.
-            new_auth = GlobusOAuthenticator
-            new_auth.session_required_identities = required_id
-            new_auth.login_handler.authenticator=new_auth
-            new_auth.login_handler.get(new_auth.login_handler)
+            #URL that will be redirected to in 401.html template
+            #url = 'https://jupyter.ericblau.com/hub/oauth_login?next=&session_required_identities='
 
-            # raising an error doesn't seem to help us get back to the login
+            #There's no clear way to restart the auth process from within an
+            #OAuthenticator object, so we have to raise an error and redirect
+            #from the error html template
+            #We're using 401 Unauthorized as it is a) the closest match and
+            # b) unlikely to be raised by anything else
+ 
             raise HTTPError(
-                303,
-                'This site requires authentication using {} accounts. Please reauthenticate using {}'
-                ' account at {}.'.format(
-                    self.identity_provider,
-                    self.identity_provider,
-                    cbu
-                    )
+                401,
+                session_required_identities
             )
 
         username, domain = id_token.get('preferred_username').split('@')
         self.log.info('Username/domain: %r %r', username, domain)
-        self.log.info('Token: %r', id_token)
-        self.log.info('Tokens: %r', tokens.data)
-        self.log.info('Identity Set: %r', id_set)
-        self.log.info('Identity data: %r', identities.data)
 
         if self.identity_provider and domain != self.identity_provider:
             raise HTTPError(

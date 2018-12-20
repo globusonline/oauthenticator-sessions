@@ -34,11 +34,13 @@ class GlobusLoginHandler(OAuthLoginHandler, GlobusMixin):
         redirect_uri = self.authenticator.get_callback_url(self)
         self.log.info('OAuth redirect: %r', redirect_uri)
         state = self.get_state()
+        session_message = self.get_argument("session_message", None, True)
         session_required_identities = self.get_argument("session_required_identities", None, True)
 
         if bool(session_required_identities):
             self.log.info('There are required identities: %r', session_required_identities)
             extra_params={'state': state,
+                          'session_message': session_message,
                           'session_required_identities': session_required_identities}
         else:
             extra_params={'state': state}
@@ -106,7 +108,8 @@ class GlobusOAuthenticator(OAuthenticator):
 
     def _session_required_idp_default(self):
         #This is the ALCF IDP uuid
-        return 'b58b196e-c9fe-11e5-a528-8c705ad34f60'
+        #return 'b58b196e-c9fe-11e5-a528-8c705ad34f60'
+        return ''
 
     exclude_tokens = List(
         help="""Exclude tokens from being passed into user environments

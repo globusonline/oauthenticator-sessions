@@ -293,6 +293,17 @@ Alternatively you can set env variables for the following: `OAUTH_CALLBACK_URL`,
 and `OAUTH_CLIENT_SECRET`. Setting `JUPYTERHUB_CRYPT_KEY` is required, and can be generated
 with OpenSSL: `openssl rand -hex 32`
 
+There are two more settings that you need to set to restrict logins to those 
+that have authenticated with a particular IDP:
+c.GlobusOAuthenticator.session_required_idp = 'b58b196e-c9fe-11e5-a528-8c705ad34f60'
+
+(substitute the uuid for your idp for the example given, if you are not restricting to ALCF)
+
+The other setting is
+c.JupyterHub.template_paths.  For JupyterHub versions below 0.9, you have to make sure you include the default directory as well as that of the oauthenticator templates.  (0.9 and above should automatically add the default).  For example:
+
+c.JupyterHub.template_paths = ['/opt/conda/share/jupyter/hub/templates','/opt/conda/lib/python3.6/site-packages/oauthenticator/templates']
+
 You are all set by this point! Be sure to check below for tweaking settings
 related to User Identity, Transfer, and additional security.
 

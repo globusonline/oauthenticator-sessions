@@ -29,7 +29,29 @@ class GlobusMixin(OAuth2Mixin):
 
 
 class GlobusLoginHandler(OAuthLoginHandler, GlobusMixin):
-    pass
+    @gen.coroutine
+    def get(self):
+        redirect_uri = self.authenticator.get_callback_url(self)
+        self.log.info('OAuth redirect: %r', redirect_uri)
+        state = self.get_state()
+        session_message = self.get_argument("session_message", None, True)
+        session_required_identities = self.get_argument("session_required_identities", None, True)
+
+        if bool(session_required_identities):
+            self.log.info('There are required identities: %r', session_required_identities)
+            extra_params={'state': state,
+                          'session_message': session_message,
+                          'session_required_identities': session_required_identities}
+        else:
+            extra_params={'state': state}
+
+        self.set_state_cookie(state)
+        self.authorize_redirect(
+            redirect_uri=redirect_uri,
+            client_id=self.authenticator.client_id,
+            scope=self.authenticator.scope,
+            extra_params=extra_params,
+            response_type='code')
 
 
 class GlobusLogoutHandler(LogoutHandler):
@@ -81,6 +103,14 @@ class GlobusOAuthenticator(OAuthenticator):
     def _identity_provider_default(self):
         return os.getenv('IDENTITY_PROVIDER', 'globusid.org')
 
+    session_required_idp = Unicode(help="""Require that session be
+    authenticated with at least one identity from IDP""").tag(config=True)
+
+    def _session_required_idp_default(self):
+        #This is the ALCF IDP uuid
+        #return 'b58b196e-c9fe-11e5-a528-8c705ad34f60'
+        return ''
+
     exclude_tokens = List(
         help="""Exclude tokens from being passed into user environments
         when they start notebooks, Terminals, etc."""
@@ -93,7 +123,8 @@ class GlobusOAuthenticator(OAuthenticator):
         return [
             'openid',
             'profile',
-            'urn:globus:auth:scope:transfer.api.globus.org:all'
+            'urn:globus:auth:scope:transfer.api.globus.org:all',
+            'urn:globus:auth:scope:auth.globus.org:view_identity_set'
         ]
 
     allow_refresh_tokens = Bool(
@@ -140,7 +171,7 @@ class GlobusOAuthenticator(OAuthenticator):
             globus_data = base64.b64encode(
                 pickle.dumps(state)
             )
-            spawner.environment['GLOBUS_DATA'] = globus_data.decode('utf-8')
+            spawner.environment['GLOBUS_DATA'] = globus_data
 
     def globus_portal_client(self):
         return globus_sdk.ConfidentialAppAuthClient(
@@ -166,9 +197,44 @@ class GlobusOAuthenticator(OAuthenticator):
         # Doing the code for token for id_token exchange
         tokens = client.oauth2_exchange_code_for_tokens(code)
         id_token = tokens.decode_id_token(client)
-        # It's possible for identity provider domains to be namespaced
-        # https://docs.globus.org/api/auth/specification/#identity_provider_namespaces # noqa
-        username, domain = id_token.get('preferred_username').split('@', 1)
+        id_set = client.oauth2_token_introspect(tokens.data['access_token'],include='identities_set').data
+        identities = client.get_identities(ids=id_set['identities_set'])
+        required_id = ''
+        iddata = identities.data['identities']
+        self.log.info('iddata is %r', iddata)
+        for ids in iddata:
+            if ids['identity_provider']==self.session_required_idp:
+               required_id = ids['id']
+        if required_id == '':
+            self.log.info('User doesn\'t have required ALCF identity linked in this account')
+        else:
+            self.log.info('required ALCF identity is: %r', required_id)
+        session_token = client.oauth2_token_introspect(tokens.data['access_token'],include='session_info').data
+        self.log.info('session_token: %r', session_token)
+        session_token_info = session_token['session_info']
+        self.log.info('session_token_info: %r', session_token_info)
+        self.log.info('AUTHENTICATIONS %r', session_token_info['authentications'])
+        if required_id in session_token_info['authentications'].keys():
+            self.log.info('Correct ID is in authentications set')
+        else:
+            session_required_identities = required_id
+            self.log.info('required_id is %r', required_id)
+            #URL that will be redirected to in 401.html template
+            #url = 'https://jupyter.ericblau.com/hub/oauth_login?next=&session_required_identities='
+
+            #There's no clear way to restart the auth process from within an
+            #OAuthenticator object, so we have to raise an error and redirect
+            #from the error html template
+            #We're using 401 Unauthorized as it is a) the closest match and
+            # b) unlikely to be raised by anything else
+ 
+            raise HTTPError(
+                401,
+                session_required_identities
+            )
+
+        username, domain = id_token.get('preferred_username').split('@')
+        self.log.info('Username/domain: %r %r', username, domain)
 
         if self.identity_provider and domain != self.identity_provider:
             raise HTTPError(

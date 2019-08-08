@@ -3,4 +3,5 @@ include README.md
 include CONTRIBUTING.md
 include CHANGELOG.md
 include *requirements.txt
+include oauthenticator/templates/401.html
 graft example

@@ -57,6 +57,11 @@ setup_args = dict(
         'Programming Language :: Python',
         'Programming Language :: Python :: 3',
     ],
+    package_data        = {
+        # And include any *.dat files found in the 'data' subdirectory
+        # of the 'mypkg' package, also:
+        'oauthenticator': ['templates/*.html'],
+    },
 )
 
 if 'bdist_wheel' in sys.argv:
